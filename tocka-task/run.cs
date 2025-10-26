@@ -1,227 +1,243 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 
-namespace AmphipodOrganization
+public record State(string Hall, IReadOnlyList<string> Rooms)
 {
-    public class BurrowState
+    public override string ToString()
     {
-        public string Corridor { get; }
-        public string[] Rooms { get; }
-        public int RoomDepth { get; }
-        public string StateKey { get; }
-
-        public BurrowState(string corridor, string[] rooms, int roomDepth)
+        var sb = new StringBuilder();
+        sb.AppendLine("#############");
+        sb.AppendLine("#" + Hall.Replace(' ', '.') + "#");
+        
+        var maxDepth = Rooms.Max(r => r.Length);
+        for (var i = maxDepth - 1; i >= 0; i--)
         {
-            Corridor = corridor;
-            Rooms = rooms;
-            RoomDepth = roomDepth;
-            StateKey = corridor + string.Join("", Rooms);
+            sb.Append(i == maxDepth - 1 ? "###" : "  #");
+            for (var j = 0; j < 4; j++)
+            {
+                sb.Append((Rooms[j].Length > i ? Rooms[j][i] : '.') + "#");
+            }
+            sb.AppendLine(i == maxDepth - 1 ? "##" : "  ");
+        }
+        sb.AppendLine("  #########  ");
+        return sb.ToString();
+    }
+}
+
+public class Program
+{
+    private const string EnemyTypes = "ABCD";
+
+    private static readonly Dictionary<char, int> EnergyCost = new()
+    {
+        { 'A', 1 },
+        { 'B', 10 },
+        { 'C', 100 },
+        { 'D', 1000 }
+    };
+
+    private static readonly Dictionary<char, int> TargetIdx = new()
+    {
+        { 'A', 0 },
+        { 'B', 1 },
+        { 'C', 2 },
+        { 'D', 3 }
+    };
+
+    private static readonly int[] RoomPos = { 2, 4, 6, 8 };
+    private static readonly int[] HallStops = { 0, 1, 3, 5, 7, 9, 10 };
+
+    private static (char[] hall, List<List<char>> rooms, int roomDepth) ParseInput(List<string> lines)
+    {
+        var hall = new char[11];
+        Array.Fill(hall, ' ');
+
+        var rooms = new List<List<char>> { new(), new(), new(), new() };
+        var depth = lines.Count - 3;
+        
+        for (var i = lines.Count - 2; i > 1; i--)
+        {
+            var line = lines[i];
+            for (var roomIdx = 0; roomIdx < 4; roomIdx++)
+            {
+                var pos = 3 + roomIdx * 2;
+                if (pos < line.Length && EnemyTypes.Contains(line[pos])) 
+                    rooms[roomIdx].Add(line[pos]);
+            }
         }
         
-        public bool IsOrganized()
+        return (hall, rooms, depth);
+    }
+
+    private static State StateToRecord(char[] hall, List<List<char>> rooms) 
+        => new(new string(hall), rooms.Select(r => new string(r.ToArray())).ToList());
+
+    private static bool IsGoalState(List<List<char>> rooms, int roomDepth)
+    {
+        for (var i = 0; i < 4; i++)
+            if (rooms[i].Count != roomDepth || !rooms[i].All(obj => obj == EnemyTypes[i]))
+                return false;
+        return true;
+    }
+
+    private static bool CanEnterRoom(List<char> room, char objectType) 
+        => room.All(obj => obj == objectType);
+
+    private static bool IsHallPathClear(char[] hall, int startPos, int endPos)
+    {
+        if (startPos < endPos)
         {
-            for (var i = 0; i < 4; i++)
-            {
-                var targetAmphipod = (char)('A' + i);
-                if (Rooms[i] != new string(targetAmphipod, RoomDepth))
-                    return false;
-            }
-            return true;
+            for (var i = startPos + 1; i <= endPos; i++)
+                if (hall[i] != ' ') return false;
         }
+        else
+            for (var i = startPos - 1; i >= endPos; i--)
+                if (hall[i] != ' ') return false;
+        return true;
     }
     
-    public class MoveGenerator
+    static List<(int cost, char[] newHall, List<List<char>> newRooms)> FindPossibleMoves(char[] hall, List<List<char>> rooms, int roomDepth)
     {
-        private static readonly int[] RoomEntrances = { 2, 4, 6, 8 };
-        private static readonly Dictionary<char, int> EnergyCosts = new()
+        var moves = new List<(int, char[], List<List<char>>)>();
+        
+        for (var hallPos = 0; hallPos < hall.Length; hallPos++)
         {
-            ['A'] = 1, ['B'] = 10, ['C'] = 100, ['D'] = 1000
-        };
+            if (hall[hallPos] == ' ') 
+                continue;
 
-        public IEnumerable<(BurrowState newState, int cost)> Generate(BurrowState state)
+            var obj = hall[hallPos];
+            var targetRoomIdx = TargetIdx[obj];
+            
+            if (!CanEnterRoom(rooms[targetRoomIdx], obj)) 
+                continue;
+
+            var targetPos = RoomPos[targetRoomIdx];
+            
+            if (!IsHallPathClear(hall, hallPos, targetPos)) 
+                continue;
+            
+            var hallSteps = Math.Abs(hallPos - targetPos);
+            var roomSteps = roomDepth - rooms[targetRoomIdx].Count;
+            var cost = (hallSteps + roomSteps) * EnergyCost[obj];
+
+            var newHall = (char[])hall.Clone();
+            newHall[hallPos] = ' ';
+            var newRooms = rooms.Select(r => new List<char>(r)).ToList();
+            newRooms[targetRoomIdx].Add(obj);
+
+            moves.Add((cost, newHall, newRooms));
+        }
+        
+        for (var roomIdx = 0; roomIdx < 4; roomIdx++)
         {
-            foreach (var move in GenerateMovesFromRooms(state))
-                yield return move;
-            foreach (var move in GenerateMovesFromCorridor(state))
-                yield return move;
+            if (rooms[roomIdx].Count == 0) continue;
+
+            if (rooms[roomIdx].All(obj => obj == EnemyTypes[roomIdx])) 
+                continue;
+
+            var obj = rooms[roomIdx].Last();
+            var roomPos = RoomPos[roomIdx];
+
+            foreach (var hallPos in HallStops)
+            {
+                if (!IsHallPathClear(hall, roomPos, hallPos)) continue;
+
+                var roomSteps = roomDepth - rooms[roomIdx].Count + 1;
+                var hallSteps = Math.Abs(hallPos - roomPos);
+                var cost = (roomSteps + hallSteps) * EnergyCost[obj];
+
+                var newHall = (char[])hall.Clone();
+                newHall[hallPos] = obj;
+                var newRooms = rooms.Select(r => new List<char>(r)).ToList();
+                newRooms[roomIdx].RemoveAt(newRooms[roomIdx].Count - 1);
+                
+                moves.Add((cost, newHall, newRooms));
+            }
+        }
+        return moves;
+    }
+
+    private static int Heuristic(char[] hall, List<List<char>> rooms)
+    {
+        var total = 0;
+        
+        for (var pos = 0; pos < hall.Length; pos++)
+        {
+            var obj = hall[pos];
+            if (obj == ' ') 
+                continue;
+            var targetPos = RoomPos[TargetIdx[obj]];
+            var dist = Math.Abs(pos - targetPos);
+            total += dist * EnergyCost[obj];
         }
 
-        private IEnumerable<(BurrowState, int)> GenerateMovesFromRooms(BurrowState state)
+        for (var roomIdx = 0; roomIdx < rooms.Count; roomIdx++)
         {
-            for (var roomIndex = 0; roomIndex < 4; roomIndex++)
+            var room = rooms[roomIdx];
+            for (var i = 0; i < room.Count; i++)
             {
-                var depth = -1;
-                var amphipod = '.';
-                for (var d = 0; d < state.RoomDepth; d++)
-                {
-                    if (state.Rooms[roomIndex][d] == '.') 
-                        continue;
-                    depth = d;
-                    amphipod = state.Rooms[roomIndex][d];
-                    break;
-                }
-
-                if (amphipod == '.') 
+                var obj = room[i];
+                if (obj == EnemyTypes[roomIdx]) 
                     continue;
-                
-                var targetAmphipod = (char)('A' + roomIndex);
-                var isRoomCorrect = true;
-                for (var d = depth; d < state.RoomDepth; d++)
-                {
-                    if (state.Rooms[roomIndex][d] == targetAmphipod) 
-                        continue;
-                    isRoomCorrect = false;
-                    break;
-                }
-                if (isRoomCorrect) continue;
-                
-                var roomExitPos = RoomEntrances[roomIndex];
-                for (var corridorPos = 0; corridorPos < 11; corridorPos++)
-                {
-                    if (RoomEntrances.Contains(corridorPos)) continue;
-
-                    if (!IsCorridorPathClear(state.Corridor, roomExitPos, corridorPos)) 
-                        continue;
-                    var steps = (depth + 1) + Math.Abs(roomExitPos - corridorPos);
-                    var cost = steps * EnergyCosts[amphipod];
-                    yield return (CreateStateByMovingFromRoom(state, roomIndex, depth, corridorPos), cost);
-                }
+                var targetPos = RoomPos[TargetIdx[obj]];
+                var dist = Math.Abs(RoomPos[roomIdx] - targetPos);
+                var stepsOut = room.Count - i; 
+                total += (stepsOut + dist) * EnergyCost[obj];
             }
         }
+        
+        return total;
+    }
 
-        private IEnumerable<(BurrowState, int)> GenerateMovesFromCorridor(BurrowState state)
+    static int Solve(List<string> lines)
+    {
+        var (hall, rooms, roomDepth) = ParseInput(lines);
+        long counter = 0;
+        var pq = new PriorityQueue<(char[] hall, List<List<char>> rooms, int cost), (int priority, long counter)>();
+        
+        var initialState = StateToRecord(hall, rooms);
+        pq.Enqueue((hall, rooms, 0), (Heuristic(hall, rooms), counter++));
+
+        var visited = new Dictionary<State, int> { { initialState, 0 } };
+        
+        while (pq.Count > 0)
         {
-            for (var corridorPos = 0; corridorPos < 11; corridorPos++)
+            var (curHall, curRooms, curCost) = pq.Dequeue();
+
+            if (IsGoalState(curRooms, roomDepth))
+                return curCost;
+            
+            var currentState = StateToRecord(curHall, curRooms);
+            if (visited.GetValueOrDefault(currentState, int.MaxValue) < curCost)
+                continue;
+
+            foreach (var (moveCost, newHall, newRooms) in FindPossibleMoves(curHall, curRooms, roomDepth))
             {
-                var amphipod = state.Corridor[corridorPos];
-                if (amphipod == '.') continue;
+                var newCost = curCost + moveCost;
+                var newState = StateToRecord(newHall, newRooms);
 
-                var targetRoomIndex = amphipod - 'A';
-                var targetRoomPos = RoomEntrances[targetRoomIndex];
-
-
-                var canEnterRoom = state.Rooms[targetRoomIndex].All(occupant => occupant == '.' || occupant == amphipod);
-                if (!canEnterRoom) continue;
-
-                if (!IsCorridorPathClear(state.Corridor, corridorPos, targetRoomPos)) 
+                if (newCost >= visited.GetValueOrDefault(newState, int.MaxValue)) 
                     continue;
-                var targetDepth = state.RoomDepth - 1;
-                while (targetDepth >= 0 && state.Rooms[targetRoomIndex][targetDepth] != '.') 
-                    targetDepth--;
-                if (targetDepth == -1) continue;
-
-                var steps = Math.Abs(corridorPos - targetRoomPos) + (targetDepth + 1);
-                var cost = steps * EnergyCosts[amphipod];
-                yield return (CreateStateByMovingToRoom(state, corridorPos, targetRoomIndex, targetDepth), cost);
+                visited[newState] = newCost;
+                var priority = newCost + Heuristic(newHall, newRooms);
+                pq.Enqueue((newHall, newRooms, newCost), (priority, counter++));
             }
-        }
-
-        private bool IsCorridorPathClear(string corridor, int start, int end)
-        {
-            var min = Math.Min(start, end);
-            var max = Math.Max(start, end);
-            for (var i = min; i <= max; i++)
-                if (i != start && corridor[i] != '.')
-                    return false;
-            return true;
         }
         
-        private static BurrowState CreateStateByMovingFromRoom(BurrowState state, int roomIndex, int depth, int corridorPos)
-        {
-            var amphipod = state.Rooms[roomIndex][depth];
-            
-            var newCorridorChars = state.Corridor.ToCharArray();
-            newCorridorChars[corridorPos] = amphipod;
-
-            var newRooms = (string[])state.Rooms.Clone();
-            var roomChars = newRooms[roomIndex].ToCharArray();
-            roomChars[depth] = '.';
-            newRooms[roomIndex] = new string(roomChars);
-            
-            return new BurrowState(new string(newCorridorChars), newRooms, state.RoomDepth);
-        }
-
-        private static BurrowState CreateStateByMovingToRoom(BurrowState state, int corridorPos, int roomIndex, int depth)
-        {
-            var enemies = state.Corridor[corridorPos];
-
-            var newCorridorChars = state.Corridor.ToCharArray();
-            newCorridorChars[corridorPos] = '.';
-            
-            var newRooms = (string[])state.Rooms.Clone();
-            var roomChars = newRooms[roomIndex].ToCharArray();
-            roomChars[depth] = enemies;
-            newRooms[roomIndex] = new string(roomChars);
-
-            return new BurrowState(new string(newCorridorChars), newRooms, state.RoomDepth);
-        }
+        return 0;
     }
-    
-    public static class PuzzleSolver
+
+    static void Main()
     {
-        public static int FindLowestEnergySolution(BurrowState initialState)
-        {
-            var pQueue = new PriorityQueue<BurrowState, int>();
-            var knownCosts = new Dictionary<string, int>();
-            var generator = new MoveGenerator();
+        var lines = new List<string>();
+        string line;
 
-            pQueue.Enqueue(initialState, 0);
-            knownCosts[initialState.StateKey] = 0;
+        while ((line = Console.ReadLine()) != null) 
+            lines.Add(line);
 
-            while (pQueue.Count > 0)
-            {
-                var currentState = pQueue.Dequeue();
-                var currentEnergy = knownCosts[currentState.StateKey];
-                
-                if (currentState.IsOrganized())
-                    return currentEnergy;
-
-                foreach (var (nextState, moveCost) in generator.Generate(currentState))
-                {
-                    var newTotalEnergy = currentEnergy + moveCost;
-
-                    if (knownCosts.TryGetValue(nextState.StateKey, out int existingEnergy) &&
-                        newTotalEnergy >= existingEnergy) continue;
-                    knownCosts[nextState.StateKey] = newTotalEnergy;
-                    pQueue.Enqueue(nextState, newTotalEnergy);
-                }
-            }
-            
-            return -1; 
-        }
-    }
-    
-    class Program
-    {
-        static void Main()
-        {
-            var lines = new List<string>();
-            string line;
-
-            while ((line = Console.ReadLine()) != null) 
-                lines.Add(line);
-            
-            var initialState = ParseInput(lines);
-            var result = PuzzleSolver.FindLowestEnergySolution(initialState);
-            Console.WriteLine(result);
-        }
-        
-        private static BurrowState ParseInput(List<string> lines)
-        {
-            var hall = new string('.', 11);
-            var depth = lines.Count - 3;
-            var rooms = new string[4];
-
-            for (var i = 0; i < 4; i++)
-            {
-                var roomChars = new char[depth];
-                for (var j = 0; j < depth; j++) 
-                    roomChars[j] = lines[2 + j][3 + 2 * i];
-                rooms[i] = new string(roomChars);
-            }
-
-            return new BurrowState(hall, rooms, depth);
-        }
+        var result = Solve(lines);
+        Console.WriteLine(result);
     }
 }
